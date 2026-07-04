@@ -12,8 +12,9 @@ import crypto from "crypto";
 import {
   buildLoopdexHeaders,
   config,
+  getDevicePoolStats,
   getIpStatus,
-  getSessionDeviceNo,
+  getUniqueSessionDeviceNo,
   getSessionUserAgent,
   normalizeProxy,
 } from "./config.js";
@@ -69,9 +70,9 @@ function hash(value) {
 
 // ==================== HTTP CLIENT ====================
 
-async function curl(url, body = null, headers = {}, proxy = null) {
+async function curl(url, body = null, headers = {}, proxy = null, sessionKey = "default") {
   const defaultHeaders = {
-    "User-Agent": getSessionUserAgent("default"),
+    "User-Agent": getSessionUserAgent(sessionKey),
     "Accept-Encoding": "gzip, deflate, br, zstd",
     "sec-ch-ua-platform": '"Android"',
     "accept-language": "id_ID",
@@ -79,7 +80,7 @@ async function curl(url, body = null, headers = {}, proxy = null) {
     "sec-ch-ua":
       '"Android WebView";v="149", "Chromium";v="149", "Not)A;Brand";v="24"',
     "sec-ch-ua-mobile": "?1",
-    ...buildLoopdexHeaders({}, "default"),
+    ...buildLoopdexHeaders({}, sessionKey),
     referer: "https://loopdexplay.com/account?v=1QZL5VQ5",
     priority: "u=1, i",
     ...headers,
@@ -129,6 +130,178 @@ async function curl(url, body = null, headers = {}, proxy = null) {
   } catch (error) {
     log(`Request failed: ${error.message}`, "error");
     return { data: null, status: 0, cookies: [], headers: {} };
+  }
+}
+function isDeviceLimitError(message = "") {
+  return String(message).includes(
+    "Perangkat Anda Telah Mencapai Batas Pendaftaran Hari Ini",
+  );
+}
+
+async function registerAccount(phone, accountIndex) {
+  let attempt = 0;
+
+  while (true) {
+    attempt += 1;
+    const sessionKey = `index-${accountIndex}-${phone}-attempt-${attempt}`;
+    const sessionDeviceNo = getUniqueSessionDeviceNo(sessionKey);
+
+    if (!sessionDeviceNo) {
+      const pool = getDevicePoolStats();
+      log(
+        `device.txt habis. total=${pool.total}, used=${pool.used}, remaining=${pool.remaining}`,
+        "error",
+      );
+      return false;
+    }
+
+    log(`Attempt ${attempt} device: ${sessionDeviceNo}`, "info");
+
+    const getcookie = await curl("https://loopdexplay.com", null, {}, null, sessionKey);
+    if (!getcookie.cookies) {
+      log("Failed to obtain cookies.", "error");
+      return false;
+    }
+
+    log("Cookies obtained successfully.", "success");
+    const capctha = await curl(
+      "https://loopdexplay.com/player-api/captcha/get",
+      {},
+      {
+        "Content-Type": "application/json",
+        cookie: getcookie.cookies,
+      },
+      null,
+      sessionKey,
+    );
+
+    if (!capctha.data?.data?.id) {
+      log("Failed to obtain captcha ID.", "error");
+      return false;
+    }
+
+    log(`Captcha ID: ${capctha.data.data.id}`, "success");
+
+    let capcthaverif;
+    do {
+      let solution;
+      try {
+        solution = await imageToText(
+          config.captcha.apiKey,
+          capctha.data.data.captcha.backgroundImage,
+          { websiteURL: "https://loopdexplay.com" },
+        );
+      } catch (err) {
+        console.error(err.message);
+      }
+
+      log(solution.text || solution.answers[0]);
+
+      capcthaverif = await curl(
+        "https://loopdexplay.com/player-api/captcha/check",
+        { data: solution.answers[0], id: capctha.data.data.id },
+        {
+          "Content-Type": "application/json",
+          cookie: getcookie.cookies,
+        },
+        null,
+        sessionKey,
+      );
+    } while (capcthaverif.data.data === false);
+
+    if (!capcthaverif.data.data) {
+      log("Failed to verify captcha.", "error");
+      return false;
+    }
+
+    log("Captcha verified successfully.", "success");
+
+    let solutions;
+    try {
+      solutions = await solveTurnstile(
+        config.captcha.apiKey,
+        "https://loopdexplay.com",
+        config.captcha.turnstileSiteKey,
+        { action: "register" },
+      );
+
+      log(`Token: ${solutions.token.substring(0, 50)}...`);
+    } catch (err) {
+      console.error(err.message);
+      return false;
+    }
+
+    const register = await curl(
+      "https://loopdexplay.com/player-api/register",
+      {
+        username: phone,
+        password: phone,
+        registrationType: "1",
+        v: "1QZL5VQ5",
+      },
+      {
+        "Content-Type": "application/json",
+        captchaid: capctha.data.data.id,
+        "turnstile-token": solutions.token,
+        cookie: getcookie.cookies,
+      },
+      null,
+      sessionKey,
+    );
+
+    if (register.data.data) {
+      const body = new URLSearchParams({
+        username: phone,
+        password: phone,
+        registrationType: "1",
+      });
+
+      const response = await request(
+        "https://loopdexplay.com/player-api/passport/login.html",
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
+            accept: "*/*",
+            "accept-language": "id_ID",
+            captchaid: capctha.data.data.id,
+            "turnstile-token": solutions.token,
+            cookie: getcookie.cookies,
+            ...buildLoopdexHeaders({}, sessionKey),
+            referer:
+              "https://loopdexplay.com/sales-promotion/packet/c0e2b948-ee2b-4ce7-8ffc-b405b96834ab?v=1QZL5VQ5",
+            priority: "u=1, i",
+          },
+          body: body.toString(),
+        },
+      );
+
+      const responseBody = await response.body.json();
+
+      if (response.headers.sid) {
+        log("Registration successful.", "success");
+        log("Session ID: " + response.headers.sid, "info");
+        log(`Device used: ${sessionDeviceNo}`, "info");
+        fs.appendFileSync(
+          `accountnew.txt`,
+          `${phone}:${phone}:${sessionDeviceNo}:${response.headers.sid}:${getcookie.cookies}:${responseBody.data.wsToken}\n`,
+        );
+        return true;
+      }
+
+      log("Failed to obtain session ID.", "error");
+      return false;
+    }
+
+    const registerMessage =
+      register.data?.message || register.data?.error || register.data;
+    if (isDeviceLimitError(registerMessage)) {
+      log(`Device limit kena, retry dengan device lain: ${registerMessage}`, "warning");
+      continue;
+    }
+
+    log(`Failed to register ${registerMessage}`, "error");
+    return false;
   }
 }
 function generateRandomPin() {
@@ -306,133 +479,26 @@ function randomNumericString(length) {
   logDivider();
   await logNetworkStatus();
   const count = parseInt(await ask("Enter number of accounts to register: "));
+  const devicePool = getDevicePoolStats();
+  log(
+    `device.txt: total ${devicePool.total}, remaining ${devicePool.remaining}`,
+    devicePool.remaining >= count ? "success" : "warning",
+  );
+  if (devicePool.remaining < count) {
+    log(
+      "Jumlah device lebih sedikit dari target akun. Saat device habis, proses akan berhenti.",
+      "warning",
+    );
+  }
   for (let index = 0; index < count; index++) {
     const phone = "821" + randomNumericString(9);
-    const sessionDeviceNo = getSessionDeviceNo(`index-${index}-${phone}`);
     log("Phone: " + phone, "info");
-    log("device: " + sessionDeviceNo, "info");
-    const getcookie = await curl("https://loopdexplay.com");
-    if (getcookie.cookies) {
-      log("Cookies obtained successfully.", "success");
-      const capctha = await curl(
-        "https://loopdexplay.com/player-api/captcha/get",
-        {},
-        {
-          "Content-Type": "application/json",
-          cookie: getcookie.cookies,
-        },
-      );
-      if (capctha.data.data.id) {
-        log(`Captcha ID: ${capctha.data.data.id}`, "success");
-        let capcthaverif;
-        do {
-          let solution;
-          try {
-            solution = await imageToText(
-              config.captcha.apiKey,
-              capctha.data.data.captcha.backgroundImage, // opsional
-              { websiteURL: "https://loopdexplay.com" },
-            );
-          } catch (err) {
-            console.error(err.message);
-          }
-          log(solution.text || solution.answers[0]);
-
-          capcthaverif = await curl(
-            "https://loopdexplay.com/player-api/captcha/check",
-            { data: solution.answers[0], id: capctha.data.data.id },
-            {
-              "Content-Type": "application/json",
-              cookie: getcookie.cookies,
-            },
-          );
-        } while (capcthaverif.data.data === false);
-        if (capcthaverif.data.data) {
-          log("Captcha verified successfully.", "success");
-          let solutions;
-          try {
-            solutions = await solveTurnstile(
-              config.captcha.apiKey,
-              "https://loopdexplay.com",
-              config.captcha.turnstileSiteKey,
-              { action: "register" }, // opsional
-            );
-
-            log(`Token: ${solutions.token.substring(0, 50)}...`);
-          } catch (err) {
-            console.error(err.message);
-          }
-
-          const register = await curl(
-            "https://loopdexplay.com/player-api/register",
-            {
-              username: phone,
-              password: phone,
-              registrationType: "1",
-              v: "1QZL5VQ5",
-            },
-            {
-              "Content-Type": "application/json",
-              captchaid: capctha.data.data.id,
-              "turnstile-token": solutions.token,
-              cookie: getcookie.cookies,
-            },
-          );
-          if (register.data.data) {
-            log("Registration successful.", "success");
-            const body = new URLSearchParams({
-              username: phone,
-              password: phone,
-              registrationType: "1",
-            });
-
-            const response = await request(
-              "https://loopdexplay.com/player-api/passport/login.html",
-              {
-                method: "POST",
-                headers: {
-                  "content-type":
-                    "application/x-www-form-urlencoded;charset=UTF-8",
-                  accept: "*/*",
-                  "accept-language": "id_ID",
-                  captchaid: capctha.data.data.id,
-                  "turnstile-token": solutions.token,
-                  cookie: getcookie.cookies,
-                  ...buildLoopdexHeaders({}, phone),
-                  referer:
-                    "https://loopdexplay.com/sales-promotion/packet/c0e2b948-ee2b-4ce7-8ffc-b405b96834ab?v=1QZL5VQ5",
-                  priority: "u=1, i",
-                },
-                body: body.toString(),
-              },
-            );
-
-            const responseBody = await response.body.json();
-
-            // console.log("Username:", username);
-            if (response.headers.sid) {
-              log("Session ID: " + response.headers.sid, "info");
-              fs.appendFileSync(
-                `accountnew.txt`,
-                `${phone}:${phone}:${sessionDeviceNo}:${response.headers.sid}:${getcookie.cookies}:${responseBody.data.wsToken}\n`,
-              );
-            } else {
-              log("Failed to obtain session ID.", "error");
-            }
-          } else {
-            log(
-              `Failed to register ${register.data.message || register.data.error || register.data}`,
-              "error",
-            );
-          }
-        } else {
-          log("Failed to verify captcha.", "error");
-        }
-      } else {
-        log("Failed to obtain captcha ID.", "error");
+    const success = await registerAccount(phone, index);
+    if (!success) {
+      log(`Stop pada akun ${index + 1}.`, "warning");
+      if (getDevicePoolStats().remaining === 0) {
+        break;
       }
-    } else {
-      log("Failed to obtain cookies.", "error");
     }
     console.log("");
   }

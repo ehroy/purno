@@ -105,6 +105,8 @@ phone:password:deviceNo:sid:cookie:wsToken
 - `package.json` saat ini belum memiliki script npm, jadi jalankan file langsung dengan `node`.
 - Saat script dimulai, akan tampil `IP direct` dan `IP via proxy` untuk validasi proxy.
 - Proxy yang didukung dibaca dari `PROXY_URL`, `HTTP_PROXY`, `HTTPS_PROXY`, atau `ALL_PROXY`.
+- `index.js` akan retry otomatis dengan device lain jika server menolak karena limit device harian.
+- Jika `device.txt` habis, proses akan berhenti dan menampilkan jumlah device yang tersisa.
 
 ## Ringkasan Alur
 

@@ -54,6 +54,26 @@ const deviceNoList = fs
 
 const sessionDeviceNoMap = new Map();
 const sessionUserAgentMap = new Map();
+const usedDeviceNoSet = new Set();
+
+export function getDevicePoolStats() {
+  return {
+    total: deviceNoList.length,
+    used: usedDeviceNoSet.size,
+    remaining: deviceNoList.length - usedDeviceNoSet.size,
+    exhausted: usedDeviceNoSet.size >= deviceNoList.length,
+  };
+}
+
+export function setSessionDeviceNo(sessionKey = "default", deviceNo) {
+  if (!deviceNo) {
+    return null;
+  }
+
+  sessionDeviceNoMap.set(sessionKey, deviceNo);
+  usedDeviceNoSet.add(deviceNo);
+  return deviceNo;
+}
 
 export function getSessionDeviceNo(sessionKey = "default") {
   if (!sessionDeviceNoMap.has(sessionKey)) {
@@ -63,6 +83,27 @@ export function getSessionDeviceNo(sessionKey = "default") {
   }
 
   return sessionDeviceNoMap.get(sessionKey);
+}
+
+export function getUniqueSessionDeviceNo(sessionKey = "default") {
+  if (sessionDeviceNoMap.has(sessionKey)) {
+    return sessionDeviceNoMap.get(sessionKey);
+  }
+
+  const availableDeviceNoList = deviceNoList.filter(
+    (deviceNo) => !usedDeviceNoSet.has(deviceNo),
+  );
+
+  if (!availableDeviceNoList.length) {
+    return null;
+  }
+
+  const deviceNo =
+    availableDeviceNoList[Math.floor(Math.random() * availableDeviceNoList.length)];
+
+  setSessionDeviceNo(sessionKey, deviceNo);
+
+  return deviceNo;
 }
 
 export function getSessionUserAgent(sessionKey = "default") {
