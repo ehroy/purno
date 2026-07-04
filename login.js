@@ -12,8 +12,10 @@ import crypto from "crypto";
 import {
   buildLoopdexHeaders,
   config,
+  getIpStatus,
   getSessionDeviceNo,
   getSessionUserAgent,
+  normalizeProxy,
 } from "./config.js";
 const randomBytes = crypto.randomBytes(16);
 const base64 = randomBytes.toString("base64");
@@ -85,7 +87,7 @@ async function curl(url, body = null, headers = {}, proxy = null) {
   };
 
   const method = body ? "POST" : "GET";
-  const proxyUrl = proxy ?? config.proxy;
+  const proxyUrl = normalizeProxy(proxy ?? config.proxy);
   const dispatcher = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
   const finalBody = body ? JSON.stringify(body) : undefined;
 
@@ -262,6 +264,27 @@ async function imageToText(clientKey, body, opts = {}) {
   // Result is already available here — no polling needed
   return data.solution; // e.g. { text: "44795sds" } or { answers: [...] } for "number" module
 }
+async function logNetworkStatus() {
+  try {
+    const status = await getIpStatus(config.proxy);
+
+    if (!status.isUsingProxy) {
+      log(`IP direct: ${status.directIp}`, "info");
+      log("Proxy tidak di-set, request berjalan direct.", "warning");
+      return;
+    }
+
+    log(`Proxy terdeteksi: ${status.proxyUrl}`, "info");
+    log(`IP direct: ${status.directIp}`, "info");
+    log(`IP via proxy: ${status.proxyIp}`, status.matchesDirect ? "warning" : "success");
+
+    if (status.matchesDirect) {
+      log("IP proxy sama dengan direct, cek konfigurasi proxy.", "warning");
+    }
+  } catch (error) {
+    log(`Validasi proxy/IP gagal: ${error.message}`, "error");
+  }
+}
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -279,6 +302,7 @@ function randomNumericString(length) {
   logDivider();
   log("Tomoro Coffee - Auto Register", "info");
   logDivider();
+  await logNetworkStatus();
   const list = await ask("Enter file path: ");
   const deviceNoLists = fs
     .readFileSync(new URL(list, import.meta.url), "utf8")

@@ -1,9 +1,36 @@
 import fs from "fs";
+import dotenv from "dotenv";
+import { request, ProxyAgent } from "undici";
 
+dotenv.config();
 const env = process.env;
 
+function normalizeProxyUrl(proxyUrl = "") {
+  const value = String(proxyUrl || "").trim();
+
+  if (!value) {
+    return "";
+  }
+
+  const parsed = new URL(value);
+
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error(`Proxy harus memakai protocol http/https: ${value}`);
+  }
+
+  return value;
+}
+
 export const config = {
-  proxy: env.PROXY_URL || env.HTTP_PROXY || "",
+  proxy:
+    env.PROXY_URL ||
+    env.HTTPS_PROXY ||
+    env.HTTP_PROXY ||
+    env.ALL_PROXY ||
+    env.https_proxy ||
+    env.http_proxy ||
+    env.all_proxy ||
+    "",
   captcha: {
     apiKey: env.CAPSOLVER_API_KEY || "CAP-",
     turnstileSiteKey: env.TURNSTILE_SITE_KEY || "0x4AAAAAACDNCinYthKCTfgn",
@@ -61,4 +88,50 @@ export function buildLoopdexHeaders(extraHeaders = {}, sessionKey = "default") {
     "sec-fetch-dest": "empty",
     ...extraHeaders,
   };
+}
+
+async function fetchIp(proxyUrl = "") {
+  const normalizedProxy = normalizeProxyUrl(proxyUrl);
+  const dispatcher = normalizedProxy ? new ProxyAgent(normalizedProxy) : undefined;
+  const response = await request("https://api.ipify.org?format=json", {
+    dispatcher,
+    headersTimeout: 10000,
+    bodyTimeout: 10000,
+  });
+  const result = await response.body.json();
+
+  if (!result?.ip) {
+    throw new Error("Respons IP tidak valid");
+  }
+
+  return result.ip;
+}
+
+export async function getIpStatus(proxyUrl = config.proxy) {
+  const directIp = await fetchIp("");
+  const normalizedProxy = normalizeProxyUrl(proxyUrl);
+
+  if (!normalizedProxy) {
+    return {
+      proxyUrl: "",
+      directIp,
+      proxyIp: null,
+      isUsingProxy: false,
+      matchesDirect: null,
+    };
+  }
+
+  const proxyIp = await fetchIp(normalizedProxy);
+
+  return {
+    proxyUrl: normalizedProxy,
+    directIp,
+    proxyIp,
+    isUsingProxy: true,
+    matchesDirect: directIp === proxyIp,
+  };
+}
+
+export function normalizeProxy(proxyUrl = "") {
+  return normalizeProxyUrl(proxyUrl);
 }

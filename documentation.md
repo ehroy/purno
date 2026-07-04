@@ -103,6 +103,8 @@ phone:password:deviceNo:sid:cookie:wsToken
 - Jika `CAPSOLVER_API_KEY` kosong, proses captcha akan gagal.
 - Jika `device.txt` kosong atau tidak ada, script tidak bisa mengambil device number.
 - `package.json` saat ini belum memiliki script npm, jadi jalankan file langsung dengan `node`.
+- Saat script dimulai, akan tampil `IP direct` dan `IP via proxy` untuk validasi proxy.
+- Proxy yang didukung dibaca dari `PROXY_URL`, `HTTP_PROXY`, `HTTPS_PROXY`, atau `ALL_PROXY`.
 
 ## Ringkasan Alur
 
