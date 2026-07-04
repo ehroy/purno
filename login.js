@@ -71,8 +71,6 @@ function hash(value) {
 
 async function curl(url, body = null, headers = {}, proxy = null) {
   const defaultHeaders = {
-    "User-Agent":
-      getSessionUserAgent("default"),
     "Accept-Encoding": "gzip, deflate, br, zstd",
     "sec-ch-ua-platform": '"Android"',
     "accept-language": "id_ID",
