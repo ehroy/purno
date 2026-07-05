@@ -9,6 +9,7 @@ import fs from "fs";
 import axios from "axios";
 import { createWorker } from "tesseract.js";
 import crypto from "crypto";
+import { CookieJar } from "./cookie-jar.js";
 import {
   buildLoopdexHeaders,
   config,
@@ -16,6 +17,7 @@ import {
   getSessionDeviceNo,
   getSessionUserAgent,
   normalizeProxy,
+  webUrl,
 } from "./config.js";
 const randomBytes = crypto.randomBytes(16);
 const base64 = randomBytes.toString("base64");
@@ -58,7 +60,7 @@ function ask(question) {
   return new Promise((resolve) => rl.question(chalk.yellow(question), resolve));
 }
 
-const url = "https://boosttrix.com/player-api/guestRegister";
+const url = webUrl("/player-api/guestRegister");
 
 const deviceId = crypto.randomBytes(16).toString("hex");
 const inSiteQueryParams = {};
@@ -69,7 +71,14 @@ function hash(value) {
 
 // ==================== HTTP CLIENT ====================
 
-async function curl(url, body = null, headers = {}, proxy = null) {
+async function curl(
+  url,
+  body = null,
+  headers = {},
+  proxy = null,
+  cookieJar = null,
+) {
+  const jarCookie = cookieJar?.getCookieHeader();
   const defaultHeaders = {
     "Accept-Encoding": "gzip, deflate, br, zstd",
     "sec-ch-ua-platform": '"Android"',
@@ -79,8 +88,9 @@ async function curl(url, body = null, headers = {}, proxy = null) {
       '"Android WebView";v="149", "Chromium";v="149", "Not)A;Brand";v="24"',
     "sec-ch-ua-mobile": "?1",
     ...buildLoopdexHeaders({}, "default"),
-    referer: "https://loopdexplay.com/account?v=1QZL5VQ5",
+    referer: webUrl("/account?v=1QZL5VQ5"),
     priority: "u=1, i",
+    ...(jarCookie && !headers.cookie ? { cookie: jarCookie } : {}),
     ...headers,
   };
 
@@ -119,10 +129,12 @@ async function curl(url, body = null, headers = {}, proxy = null) {
       data = text;
     }
 
+    cookieJar?.setCookies(resHeaders["set-cookie"] || []);
+
     return {
       data,
       status: statusCode,
-      cookies: resHeaders["set-cookie"] || [],
+      cookies: cookieJar?.getCookieHeader() || resHeaders["set-cookie"] || [],
       headers: resHeaders,
     };
   } catch (error) {
@@ -313,16 +325,18 @@ function randomNumericString(length) {
     log("Phone: " + phone, "info");
     const sessionDeviceNo = getSessionDeviceNo(phone);
     log("device: " + sessionDeviceNo, "info");
-    const getcookie = await curl("https://loopdexplay.com");
-    if (getcookie.cookies) {
+    const cookieJar = new CookieJar();
+    await curl(webUrl(), null, {}, null, cookieJar);
+    if (cookieJar.hasCookies()) {
       log("Cookies obtained successfully.", "success");
       const capctha = await curl(
-        "https://loopdexplay.com/player-api/captcha/get",
+        webUrl("/player-api/captcha/get"),
         {},
         {
           "Content-Type": "application/json",
-          cookie: getcookie.cookies,
         },
+        null,
+        cookieJar,
       );
       if (capctha.data.data.id) {
         log(`Captcha ID: ${capctha.data.data.id}`, "success");
@@ -333,7 +347,7 @@ function randomNumericString(length) {
             solution = await imageToText(
               config.captcha.apiKey,
               capctha.data.data.captcha.backgroundImage, // opsional
-              { websiteURL: "https://loopdexplay.com" },
+              { websiteURL: webUrl() },
             );
           } catch (err) {
             console.error(err.message);
@@ -341,12 +355,13 @@ function randomNumericString(length) {
           log(solution.text || solution.answers[0]);
 
           capcthaverif = await curl(
-            "https://loopdexplay.com/player-api/captcha/check",
+            webUrl("/player-api/captcha/check"),
             { data: solution.answers[0], id: capctha.data.data.id },
             {
               "Content-Type": "application/json",
-              cookie: getcookie.cookies,
             },
+            null,
+            cookieJar,
           );
         } while (capcthaverif.data.data === false);
         if (capcthaverif.data.data) {
@@ -355,7 +370,7 @@ function randomNumericString(length) {
           try {
             solutions = await solveTurnstile(
               config.captcha.apiKey,
-              "https://loopdexplay.com",
+              webUrl(),
               config.captcha.turnstileSiteKey,
               { action: "register" }, // opsional
             );
@@ -371,25 +386,26 @@ function randomNumericString(length) {
           });
 
           const response = await request(
-            "https://loopdexplay.com/player-api/passport/login.html",
+            webUrl("/player-api/passport/login.html"),
             {
               method: "POST",
-                headers: {
-                  "content-type":
-                    "application/x-www-form-urlencoded;charset=UTF-8",
-                  accept: "*/*",
-                  "accept-language": "id_ID",
-                  captchaid: capctha.data.data.id,
-                  "turnstile-token": solutions.token,
-                  cookie: getcookie.cookies,
-                  ...buildLoopdexHeaders({}, phone),
-                  referer:
-                    "https://loopdexplay.com/sales-promotion/packet/c0e2b948-ee2b-4ce7-8ffc-b405b96834ab?v=1QZL5VQ5",
-                  priority: "u=1, i",
+              headers: {
+                "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
+                accept: "*/*",
+                "accept-language": "id_ID",
+                captchaid: capctha.data.data.id,
+                "turnstile-token": solutions.token,
+                cookie: cookieJar.getCookieHeader(),
+                ...buildLoopdexHeaders({}, phone),
+                referer:
+                  webUrl("/sales-promotion/packet/c0e2b948-ee2b-4ce7-8ffc-b405b96834ab?v=1QZL5VQ5"),
+                priority: "u=1, i",
               },
               body: body.toString(),
             },
           );
+
+          cookieJar.setCookies(response.headers["set-cookie"] || []);
 
           const responseBody = await response.body.json();
 
@@ -399,7 +415,7 @@ function randomNumericString(length) {
             log("Session ID: " + response.headers.sid, "info");
             fs.appendFileSync(
               `accountlogin.txt`,
-              `${phone}:${phone}:${sessionDeviceNo}:${response.headers.sid}:${getcookie.cookies}:${responseBody.data.wsToken}\n`,
+              `${phone}:${phone}:${sessionDeviceNo}:${response.headers.sid}:${cookieJar.getCookieHeader()}:${responseBody.data.wsToken}\n`,
             );
           } else {
             log("Failed to obtain session ID.", "error");

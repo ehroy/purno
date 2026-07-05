@@ -14,14 +14,31 @@ function normalizeProxyUrl(proxyUrl = "") {
 
   const parsed = new URL(value);
 
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
+  if (!["http:", "https:"].includes(parsed.protocol)) {
     throw new Error(`Proxy harus memakai protocol http/https: ${value}`);
   }
 
   return value;
 }
 
+function normalizeBaseUrl(baseUrl = "") {
+  const value = String(baseUrl || "").trim().replace(/\/+$/, "");
+
+  if (!value) {
+    return "https://loopdexplay.com";
+  }
+
+  const parsed = new URL(value);
+
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error(`BASE_URL harus memakai protocol http/https: ${value}`);
+  }
+
+  return value;
+}
+
 export const config = {
+  baseUrl: normalizeBaseUrl(env.BASE_URL || env.WEB_BASE_URL),
   proxy:
     env.PROXY_URL ||
     env.HTTPS_PROXY ||
@@ -37,6 +54,16 @@ export const config = {
   },
   deviceNoFile: env.DEVICE_NO_FILE || "./device.txt",
 };
+
+export function webUrl(path = "") {
+  const suffix = String(path || "");
+
+  if (!suffix) {
+    return config.baseUrl;
+  }
+
+  return `${config.baseUrl}${suffix.startsWith("/") ? suffix : `/${suffix}`}`;
+}
 
 const userAgentList = [
   "Mozilla/5.0 (Linux; Android 10; Redmi Note 7 Build/QQ3A.200605.002) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Mobile Safari/537.36",
@@ -99,7 +126,9 @@ export function getUniqueSessionDeviceNo(sessionKey = "default") {
   }
 
   const deviceNo =
-    availableDeviceNoList[Math.floor(Math.random() * availableDeviceNoList.length)];
+    availableDeviceNoList[
+      Math.floor(Math.random() * availableDeviceNoList.length)
+    ];
 
   setSessionDeviceNo(sessionKey, deviceNo);
 
@@ -122,18 +151,22 @@ export function buildLoopdexHeaders(extraHeaders = {}, sessionKey = "default") {
     "custom-user-agent": "app_android",
     "user-agent": getSessionUserAgent(sessionKey),
     deviceno: getSessionDeviceNo(sessionKey),
-    origin: "https://loopdexplay.com",
+    origin: config.baseUrl,
     "x-requested-with": "com.ids2.game",
     "sec-fetch-site": "same-origin",
     "sec-fetch-mode": "cors",
     "sec-fetch-dest": "empty",
+    "Tracking-Id": "",
+    "Tracking-Type": "",
     ...extraHeaders,
   };
 }
 
 async function fetchIp(proxyUrl = "") {
   const normalizedProxy = normalizeProxyUrl(proxyUrl);
-  const dispatcher = normalizedProxy ? new ProxyAgent(normalizedProxy) : undefined;
+  const dispatcher = normalizedProxy
+    ? new ProxyAgent(normalizedProxy)
+    : undefined;
   const response = await request("https://api.ipify.org?format=json", {
     dispatcher,
     headersTimeout: 10000,

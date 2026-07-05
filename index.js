@@ -9,6 +9,7 @@ import fs from "fs";
 import axios from "axios";
 import { createWorker } from "tesseract.js";
 import crypto from "crypto";
+import { CookieJar } from "./cookie-jar.js";
 import {
   buildLoopdexHeaders,
   config,
@@ -17,6 +18,7 @@ import {
   getUniqueSessionDeviceNo,
   getSessionUserAgent,
   normalizeProxy,
+  webUrl,
 } from "./config.js";
 const randomBytes = crypto.randomBytes(16);
 const base64 = randomBytes.toString("base64");
@@ -59,7 +61,7 @@ function ask(question) {
   return new Promise((resolve) => rl.question(chalk.yellow(question), resolve));
 }
 
-const url = "https://boosttrix.com/player-api/guestRegister";
+const url = webUrl("/player-api/guestRegister");
 
 const deviceId = crypto.randomBytes(16).toString("hex");
 const inSiteQueryParams = {};
@@ -70,20 +72,30 @@ function hash(value) {
 
 // ==================== HTTP CLIENT ====================
 
-async function curl(url, body = null, headers = {}, proxy = null, sessionKey = "default") {
+async function curl(
+  url,
+  body = null,
+  headers = {},
+  proxy = null,
+  sessionKey = "default",
+  cookieJar = null,
+) {
+  const jarCookie = cookieJar?.getCookieHeader();
   const defaultHeaders = {
     "Accept-Encoding": "gzip, deflate, br, zstd",
     "sec-ch-ua-platform": '"Android"',
     "accept-language": "id_ID",
     accept: "*/*",
     "sec-ch-ua":
-      '"Android WebView";v="149", "Chromium";v="149", "Not)A;Brand";v="24"',
+      '"Not)A;Brand";v="8", "Chromium";v="138", "Android WebView";v="138"',
     "sec-ch-ua-mobile": "?1",
     ...buildLoopdexHeaders({}, sessionKey),
-    referer: "https://loopdexplay.com/account?v=1QZL5VQ5",
+    referer: webUrl("/account?v=1QZL5VQ5"),
     priority: "u=1, i",
+    ...(jarCookie && !headers.cookie ? { cookie: jarCookie } : {}),
     ...headers,
   };
+  // console.log(defaultHeaders);
 
   const method = body ? "POST" : "GET";
   const proxyUrl = normalizeProxy(proxy ?? config.proxy);
@@ -120,10 +132,12 @@ async function curl(url, body = null, headers = {}, proxy = null, sessionKey = "
       data = text;
     }
 
+    cookieJar?.setCookies(resHeaders["set-cookie"] || []);
+
     return {
       data,
       status: statusCode,
-      cookies: resHeaders["set-cookie"] || [],
+      cookies: cookieJar?.getCookieHeader() || resHeaders["set-cookie"] || [],
       headers: resHeaders,
     };
   } catch (error) {
@@ -155,23 +169,32 @@ async function registerAccount(phone, accountIndex) {
     }
 
     log(`Attempt ${attempt} device: ${sessionDeviceNo}`, "info");
+    const cookieJar = new CookieJar();
 
-    const getcookie = await curl("https://loopdexplay.com", null, {}, null, sessionKey);
-    if (!getcookie.cookies) {
+    const getcookie = await curl(
+      webUrl(),
+      null,
+      {},
+      null,
+      sessionKey,
+      cookieJar,
+    );
+    console.log(getcookie);
+    if (!cookieJar.hasCookies()) {
       log("Failed to obtain cookies.", "error");
       return false;
     }
 
     log("Cookies obtained successfully.", "success");
     const capctha = await curl(
-      "https://loopdexplay.com/player-api/captcha/get",
+      webUrl("/player-api/captcha/get"),
       {},
       {
         "Content-Type": "application/json",
-        cookie: getcookie.cookies,
       },
       null,
       sessionKey,
+      cookieJar,
     );
 
     if (!capctha.data?.data?.id) {
@@ -188,7 +211,7 @@ async function registerAccount(phone, accountIndex) {
         solution = await imageToText(
           config.captcha.apiKey,
           capctha.data.data.captcha.backgroundImage,
-          { websiteURL: "https://loopdexplay.com" },
+          { websiteURL: webUrl() },
         );
       } catch (err) {
         console.error(err.message);
@@ -197,14 +220,14 @@ async function registerAccount(phone, accountIndex) {
       log(solution.text || solution.answers[0]);
 
       capcthaverif = await curl(
-        "https://loopdexplay.com/player-api/captcha/check",
+        webUrl("/player-api/captcha/check"),
         { data: solution.answers[0], id: capctha.data.data.id },
         {
           "Content-Type": "application/json",
-          cookie: getcookie.cookies,
         },
         null,
         sessionKey,
+        cookieJar,
       );
     } while (capcthaverif.data.data === false);
 
@@ -219,7 +242,7 @@ async function registerAccount(phone, accountIndex) {
     try {
       solutions = await solveTurnstile(
         config.captcha.apiKey,
-        "https://loopdexplay.com",
+        webUrl(),
         config.captcha.turnstileSiteKey,
         { action: "register" },
       );
@@ -231,23 +254,22 @@ async function registerAccount(phone, accountIndex) {
     }
 
     const register = await curl(
-      "https://loopdexplay.com/player-api/register",
+      webUrl("/player-api/register"),
       {
         username: phone,
         password: phone,
         registrationType: "1",
-        v: "1QZL5VQ5",
       },
       {
         "Content-Type": "application/json",
         captchaid: capctha.data.data.id,
         "turnstile-token": solutions.token,
-        cookie: getcookie.cookies,
       },
       null,
       sessionKey,
+      cookieJar,
     );
-
+    console.log(register);
     if (register.data.data) {
       const body = new URLSearchParams({
         username: phone,
@@ -256,7 +278,7 @@ async function registerAccount(phone, accountIndex) {
       });
 
       const response = await request(
-        "https://loopdexplay.com/player-api/passport/login.html",
+        webUrl("/player-api/passport/login.html"),
         {
           method: "POST",
           headers: {
@@ -265,15 +287,16 @@ async function registerAccount(phone, accountIndex) {
             "accept-language": "id_ID",
             captchaid: capctha.data.data.id,
             "turnstile-token": solutions.token,
-            cookie: getcookie.cookies,
+            cookie: cookieJar.getCookieHeader(),
             ...buildLoopdexHeaders({}, sessionKey),
-            referer:
-              "https://loopdexplay.com/sales-promotion/packet/c0e2b948-ee2b-4ce7-8ffc-b405b96834ab?v=1QZL5VQ5",
+            referer: webUrl("/home"),
             priority: "u=1, i",
           },
           body: body.toString(),
         },
       );
+
+      cookieJar.setCookies(response.headers["set-cookie"] || []);
 
       const responseBody = await response.body.json();
 
@@ -283,7 +306,7 @@ async function registerAccount(phone, accountIndex) {
         log(`Device used: ${sessionDeviceNo}`, "info");
         fs.appendFileSync(
           `accountnew.txt`,
-          `${phone}:${phone}:${sessionDeviceNo}:${response.headers.sid}:${getcookie.cookies}:${responseBody.data.wsToken}\n`,
+          `${phone}:${phone}:${sessionDeviceNo}:${response.headers.sid}:${cookieJar.getCookieHeader()}:${responseBody.data.wsToken}\n`,
         );
         return true;
       }
@@ -295,7 +318,10 @@ async function registerAccount(phone, accountIndex) {
     const registerMessage =
       register.data?.message || register.data?.error || register.data;
     if (isDeviceLimitError(registerMessage)) {
-      log(`Device limit kena, retry dengan device lain: ${registerMessage}`, "warning");
+      log(
+        `Device limit kena, retry dengan device lain: ${registerMessage}`,
+        "warning",
+      );
       continue;
     }
 

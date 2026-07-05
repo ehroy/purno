@@ -27,6 +27,7 @@ Contoh isi `.env`:
 ```env
 CAPSOLVER_API_KEY=ISI_API_KEY_CAPSOLVER
 TURNSTILE_SITE_KEY=0x4AAAAAACDNCinYthKCTfgn
+BASE_URL=https://loopdexplay.com
 PROXY_URL=http://user:pass@host:port
 # atau
 HTTP_PROXY=http://user:pass@host:port

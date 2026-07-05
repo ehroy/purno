@@ -9,7 +9,8 @@ import fs from "fs";
 import axios from "axios";
 import { createWorker } from "tesseract.js";
 import crypto from "crypto";
-import { config, getIpStatus, getSessionUserAgent, normalizeProxy } from "./config.js";
+import { CookieJar } from "./cookie-jar.js";
+import { config, getIpStatus, getSessionUserAgent, normalizeProxy, webUrl } from "./config.js";
 const randomBytes = crypto.randomBytes(16);
 const base64 = randomBytes.toString("base64");
 const rl = readline.createInterface({
@@ -51,7 +52,7 @@ function ask(question) {
   return new Promise((resolve) => rl.question(chalk.yellow(question), resolve));
 }
 
-const url = "https://boosttrix.com/player-api/guestRegister";
+const url = webUrl("/player-api/guestRegister");
 
 const deviceId = crypto.randomBytes(16).toString("hex");
 const inSiteQueryParams = {};
@@ -62,7 +63,14 @@ function hash(value) {
 
 // ==================== HTTP CLIENT ====================
 
-async function curl(url, body = null, headers = {}, proxy = null) {
+async function curl(
+  url,
+  body = null,
+  headers = {},
+  proxy = null,
+  cookieJar = null,
+) {
+  const jarCookie = cookieJar?.getCookieHeader();
   const defaultHeaders = {
     "Accept-Encoding": "gzip, deflate, br, zstd",
     "sec-ch-ua-platform": '"Android"',
@@ -73,13 +81,14 @@ async function curl(url, body = null, headers = {}, proxy = null) {
     "sec-ch-ua-mobile": "?1",
     appversion: "7",
     "custom-user-agent": "app_android",
-    origin: "https://loopdexplay.com",
+    origin: config.baseUrl,
     "x-requested-with": "com.ids2.game",
     "sec-fetch-site": "same-origin",
     "sec-fetch-mode": "cors",
     "sec-fetch-dest": "empty",
-    referer: "https://loopdexplay.com/account?v=1QZL5VQ5",
+    referer: webUrl("/account?v=1QZL5VQ5"),
     priority: "u=1, i",
+    ...(jarCookie && !headers.cookie ? { cookie: jarCookie } : {}),
     ...headers,
   };
 
@@ -118,10 +127,12 @@ async function curl(url, body = null, headers = {}, proxy = null) {
       data = text;
     }
 
+    cookieJar?.setCookies(resHeaders["set-cookie"] || []);
+
     return {
       data,
       status: statusCode,
-      cookies: resHeaders["set-cookie"] || [],
+      cookies: cookieJar?.getCookieHeader() || resHeaders["set-cookie"] || [],
       headers: resHeaders,
     };
   } catch (error) {
@@ -308,11 +319,12 @@ function randomNumericString(length) {
     .filter(Boolean);
   for (let index = 0; index < deviceNoList.length; index++) {
     const element = deviceNoList[index];
-    const getcookie = await curl("https://loopdexplay.com");
-    if (getcookie.cookies) {
+    const cookieJar = new CookieJar();
+    await curl(webUrl(), null, {}, null, cookieJar);
+    if (cookieJar.hasCookies()) {
       log("Cookies obtained successfully.", "success");
       const claim = await curl(
-        "https://loopdexplay.com/activity-api/packet/luckyDraw",
+        webUrl("/activity-api/packet/luckyDraw"),
         {
           messageId: "c0e2b948-ee2b-4ce7-8ffc-b405b96834ab",
           packetId: null,
@@ -321,8 +333,9 @@ function randomNumericString(length) {
           deviceno: element.split(":")[2],
           sid: element.split(":")[3],
           "Content-Type": "application/json",
-          cookie: getcookie.cookies,
         },
+        null,
+        cookieJar,
       );
       console.log(claim.data);
     } else {
